@@ -1,0 +1,12 @@
+nodes:
+- name: local
+  connection:
+    host: 127.0.0.1  # ip address
+    port: 22 # ssh port
+    user: username # username
+    pass: password # password
+  path:
+    local: /home/root/test # local path 
+    remote: /home/root/test # remote path
+
+ignore: [".git", "public/Runtime/Logs/", "public/Runtime/!Temp",  "/public/*.js"] # ignore file
