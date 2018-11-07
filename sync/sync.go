@@ -2,6 +2,7 @@ package sync
 
 import (
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -18,17 +19,18 @@ import (
 )
 
 var (
-	configName = "local"
-	configFile string
-	ignore     []IGNORE
-	force      []string
-	co         CONFIG
-	no         NODE
-	elapsed    time.Duration
-	summary    SUMMARY
-	isCli      bool
-	cli        CLISHOW
+	ignore  []IGNORE
+	force   []string
+	summary SUMMARY
+	isCli   bool
+	object  *SYNC
 )
+
+type SYNC struct {
+	Node   NODE     `yaml:"node"`
+	Ignore []string `yaml:"ignore"`
+	Cli    CLISHOW  `yaml:"cli"`
+}
 
 // SUMMARY summary
 type SUMMARY struct {
@@ -60,38 +62,63 @@ type PATH struct {
 
 // NODE yaml config
 type NODE struct {
-	Name       string     `yaml:"name"`
 	Connection CONNECTION `yaml:"connection"`
 	Path       PATH       `yaml:"path"`
 }
 
-// CONFIG yaml config
-type CONFIG struct {
-	Nodes  []NODE   `yaml:"nodes"`
-	Ignore []string `yaml:"ignore"`
-}
-
 // CLISHOW show info in cli mode
 type CLISHOW struct {
-	Unchange  bool
-	Ignore    bool
-	Change    bool
-	Spendtime bool
-	Print     bool
+	Unchange  bool `yaml:"unchange"`
+	Ignore    bool `yaml:"ignore"`
+	Change    bool `yaml:"change"`
+	Spendtime bool `yaml:"spendtime"`
+	Print     bool `yaml:"print"`
 }
 
-// DoSyncCli do sync with cli
-func DoSyncCli(configFile string, show CLISHOW) {
-	isCli = true
-	cli = show
-	if len(os.Args) > 1 {
-		configName = os.Args[1]
-	} else {
-		fmt.Println("pls input the config name: ")
-		fmt.Scanln(&configName)
+func InitByYaml(config []byte) (*SYNC, error) {
+	co := SYNC{}
+	yaml.Unmarshal(config, &co)
+	if co.Node == (NODE{}) {
+		return nil, errors.New("load config fail")
 	}
-	err := DoSync(configFile, configName)
+	return &co, nil
+}
+
+func InitByFile(configFile string) (*SYNC, error) {
+	config, err := ioutil.ReadFile(configFile)
+	co := SYNC{}
 	if err != nil {
+		return nil, err
+	}
+	yaml.Unmarshal(config, &co)
+	if co.Node == (NODE{}) {
+		return nil, errors.New("load config fail")
+	}
+	return &co, nil
+}
+
+func (obj *SYNC) DoSync() (SUMMARY, error) {
+	object = obj
+	node := object.Node
+	connection := node.Connection
+	path := node.Path
+	parseIgnore(object.Ignore)
+	if err := sync(connection.Host, connection.Port, connection.User, connection.Pass, path.Local, path.Remote); err != nil {
+		return SUMMARY{}, err
+	}
+	return summary, nil
+}
+
+func (obj *SYNC) DoSyncCli() {
+	object = obj
+	isCli = true
+	show := object.Cli
+	node := object.Node
+	connection := node.Connection
+	path := node.Path
+	parseIgnore(object.Ignore)
+	log.Println(object)
+	if err := sync(connection.Host, connection.Port, connection.User, connection.Pass, path.Local, path.Remote); err != nil {
 		log.Fatalln(err)
 	}
 	fmt.Println("finished")
@@ -117,36 +144,14 @@ func DoSyncCli(configFile string, show CLISHOW) {
 	}
 
 	if show.Spendtime {
-		fmt.Println("elapsed time: ", elapsed)
+		fmt.Println("elapsed time: ", summary.spendtime)
 	}
 	log.Println("press ctr+c to exit")
 	select {}
 }
 
-// DoSync do sync
-func DoSync(configFile, comfigName string) error {
-	config, err := ioutil.ReadFile(configFile)
-	if err != nil {
-		fmt.Println(configFile)
-		return err
-	}
-	yaml.Unmarshal(config, &co)
-
-	for _, v := range co.Nodes {
-		if v.Name == configName {
-			no = v
-		}
-	}
-	parseIgnore(co.Ignore, no.Path.Local)
-	if no.Name == "" {
-		return fmt.Errorf("config %s not found", configName)
-	}
-
-	return Sync(no.Connection.Host, no.Connection.Port, no.Connection.User, no.Connection.Pass, no.Path.Local, no.Path.Remote)
-}
-
 // Sync do sync from local to remote
-func Sync(host string, port int, userName, password, localPath, remotePath string) error {
+func sync(host string, port int, userName, password, localPath, remotePath string) error {
 	var (
 		err        error
 		sftpClient *sftp.Client
@@ -176,13 +181,14 @@ func Sync(host string, port int, userName, password, localPath, remotePath strin
 	if err = uploadDirectory(sftpClient, localPath, remotePath); err != nil {
 		return err
 	}
-	elapsed = time.Since(start)
+	elapsed := time.Since(start)
 	summary.spendtime = elapsed
 	return nil
 }
 
 // upload file
 func uploadFile(sftpClient *sftp.Client, localFullName string, remoteFullName string) error {
+	cli := object.Cli
 	localFile, err := os.Open(localFullName)
 	if err != nil {
 		return fmt.Errorf("os.Open fail:%s; error:%s", localFullName, err)
@@ -231,6 +237,8 @@ func uploadFile(sftpClient *sftp.Client, localFullName string, remoteFullName st
 
 // upload directory
 func uploadDirectory(sftpClient *sftp.Client, localPath string, remotePath string) error {
+	cli := object.Cli
+	no := object.Node
 	localFiles, err := ioutil.ReadDir(localPath)
 	if err != nil {
 		return fmt.Errorf("read dir list fail:%s; error:%s", localPath, err)
@@ -322,7 +330,7 @@ func connect(user, password, host string, port int) (*sftp.Client, error) {
 }
 
 // parseIgnore
-func parseIgnore(ign []string, local string) {
+func parseIgnore(ign []string) {
 	var push bool
 	for _, rule := range ign {
 		ig := IGNORE{}
